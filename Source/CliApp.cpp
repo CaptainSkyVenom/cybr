@@ -46,12 +46,12 @@ void CLIApp::shutdown()
 
 const String CLIApp::getApplicationName() 
 {
-    return "Cybernetic Production";
+    return "cybr";
 }
 
 const String CLIApp::getApplicationVersion() 
 {
-    return "0.0.1";
+    return "0.1.0";
 }
 
 
@@ -122,10 +122,13 @@ void CLIApp::onRunning()
         "--list-plugin-params",
         "--list-plugin-params=name",
         "List all the automatable parameters in the given plugin",
-        "Given a case insensite name for a plugin, print a list of all automatable\n\
-        parameters. To see a list of available plugins, use the --list-plugins\n\
-        option. NOTE: --list-plugins may output the type as well as the name. The\n\
-        type should not be included in the argument value for this argument.",
+        "Given a for a plugin, print a list of all automatable parameters\n\
+        To see a list of available plugins, use the --list-plugins option.\n\
+        NOTE: --list-plugins may output the type as well as the name. The\n\
+        type should not be included in the argument value for this argument.\n\
+        \n\
+        IMPORTANT: For internal plugins, the plugin name is case sensitive.\n\
+        for external plugins (VST/VST3/AudioUnit) the name is case insensitive.",
         [this](const ArgumentList& args) {
             String pluginName = args.getValueForOption("--list-plugin-params");
             if (pluginName.isEmpty()) {
@@ -133,6 +136,22 @@ void CLIApp::onRunning()
                 return;
             }
             listPluginParameters(engine, pluginName);
+        }});
+
+    cApp.addCommand({
+        "--list-plugin-presets",
+        "--list-plugin-presets=name",
+        "Print all presets (programs) for a named plugin",
+        "Print all presets (programs) for a named plugin\n\
+        IMPORTANT: For internal plugins, the plugin name is case sensitive.\n\
+        for external plugins (VST/VST3/AudioUnit) the name is case insensitive.",
+        [this](const ArgumentList& args) {
+            String pluginName = args.getValueForOption("--list-plugin-presets");
+            if (pluginName.isEmpty()) {
+                std::cout << "--list-plugin-programs requires a plugin name";
+                return;
+            }
+            listPluginPresets(engine, pluginName);
         }});
 
     cApp.addCommand({
@@ -226,10 +245,10 @@ void CLIApp::onRunning()
         } });
 
     cApp.addCommand({
-        "--print-config-path",
-        "--print-config-path",
-        "Print full settings file name",
-        "Find the config settings file",
+        "--print-config-filename",
+        "--print-config-filename",
+        "Print the complete settings filename.",
+        "Print the complete path and filename of the settings file",
         [](const ArgumentList&) {
             std::cout << te::getApplicationSettings()->getFile().getFullPathName() << std::endl;
         } });

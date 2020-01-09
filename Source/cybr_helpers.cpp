@@ -51,7 +51,7 @@ te::Edit* createEdit(File inputFile, te::Engine& engine) {
             std::cout << "WARNING! Edit contains this plugin, which is missing from the host: " << plugin->getName() << std::endl;
         }
     }
-    std::cout << "Loaded file: " << inputFile.getFullPathName() << std::endl << std::endl;
+    std::cout << "Loaded edit file: " << inputFile.getFullPathName() << std::endl << std::endl;
     return newEdit;
 }
 
@@ -347,6 +347,86 @@ void listPluginParameters(te::Engine& engine, const String pluginName) {
     }
 }
 
+void listPluginPresets(te::Engine& engine, const String pluginName) {
+    std::unique_ptr<te::Edit> edit(createEmptyEdit(File(), engine));
+    edit->ensureNumberOfAudioTracks(1);
+    te::AudioTrack* track = te::getFirstAudioTrack(*edit);
+    te::Plugin* plugin = getOrCreatePluginByName(*track, pluginName);
+    if (!plugin) {
+        std::cout << "Plugin not found: " << pluginName << std::endl;
+        return;
+    }
+    if (auto extPlugin = dynamic_cast<te::ExternalPlugin*>(plugin)) {
+        std::cout << "ExternalPlugin::getProgramName(i) for " << extPlugin->getName() << std::endl;
+        int numPrograms = extPlugin->getNumPrograms();
+        for (int i = 0; i < numPrograms; i++)
+            std::cout << i << " - " << extPlugin->getProgramName(i) << std::endl;
+    }
+    {
+        std::cout << "Plugin::hasNameForMidiProgram for " << plugin->getName() << std::endl;
+        for (int i = 0; i <= 127; i++) {
+            String programName;
+            if (plugin->hasNameForMidiProgram(i, 0, programName))
+                std::cout << "Program: (" << i << ") " << programName << std::endl;
+        }
+    }
+}
+
+void printPreset(te::Plugin* plugin) {
+    if (!plugin) return;
+    if (auto extPlugin = dynamic_cast<te::ExternalPlugin*>(plugin)) {
+        AudioPluginInstance*  jucePlugin = extPlugin->getAudioPluginInstance();
+        MemoryBlock mb;
+        jucePlugin->suspendProcessing(true);
+        if (extPlugin->isVST()) VSTPluginFormat::saveToFXBFile(jucePlugin, mb, false);
+        else jucePlugin->getStateInformation(mb); // works for vst3 and tracktion plugins
+        jucePlugin->suspendProcessing(false);
+        std::cout << "Plugin state: " << std::endl << mb.toBase64Encoding() << std::endl;
+    } else {
+        plugin->flushPluginStateToValueTree(); // FluishPlugin State helped me figure out how to access state in a thread-safe way
+        std::cout << "Showing xml state, because " << plugin->getName() << " is not an external plugin" << std::endl;
+        std::cout << plugin->state.toXmlString() << std::endl;
+    }
+}
+
+void saveTracktionPreset(te::Plugin* plugin, String name) {
+    if (!plugin) {
+        assert(false);
+        return;
+    }
+
+    if (!name.endsWithIgnoreCase(".trkpreset")) name.append(".trkpreset", 10);
+
+    File file = File::getCurrentWorkingDirectory()
+        .getChildFile(File::createLegalFileName(name));
+
+    if (!file.hasWriteAccess()) {
+        std::cout << "Cannot write to file: does not have write access: " << file.getFullPathName() << std::endl;
+        return;
+    }
+    ValueTree state(te::IDs::PRESET);
+    plugin->flushPluginStateToValueTree();
+    state.appendChild(plugin->state.createCopy(), nullptr);
+    state.setProperty(te::IDs::name, name, nullptr);
+    state.setProperty(te::IDs::filename, file.getFileName(), nullptr);
+    state.setProperty(te::IDs::path, file.getParentDirectory().getFullPathName(), nullptr);
+    state.setProperty(te::IDs::tags, "cybr", nullptr);
+    state.createXml()->writeTo(file);
+    std::cout << "Save tracktion preset: " << file.getFullPathName() << std::endl;
+}
+
+ValueTree loadXmlFile(File file) {
+    ValueTree result{};
+
+    if (file.existsAsFile()) {
+        if (auto xml = XmlDocument::parse(file)) result = ValueTree::fromXml(*xml.get());
+        else std::cout << "Failed to parse xml in: " << file.getFullPathName() << std::endl;
+    } else {
+        std::cout << "File does not exist!" << std::endl;
+    }
+    return result;
+}
+
 void printOscMessage(const OSCMessage& message) {
     std::cout << message.getAddressPattern().toString();
     for (const auto& arg : message) {
@@ -390,7 +470,7 @@ te::Plugin* getOrCreatePluginByName(te::AudioTrack& track, const String name, co
         // checkPlugin->getPluginType();   // "volume" - this is the "type" XML parameter
         // checkPlugin->getName();         // "Volume & Pan Plugin"
         // External plugins like "zebra 2"
-        // checkPlugin->getPluginType();   // "vst"
+        // checkPlugin->getPluginType();   // "VST" or "VST3" of "AudioUnit"
         // checkPlugin->getName();         // "Zebra2"
         bool match = false;
         if (auto x = dynamic_cast<te::ExternalPlugin*>(checkPlugin)) {

@@ -43,8 +43,11 @@ void FluidOscServer::oscMessageReceived (const OSCMessage& message) {
     if (msgAddressPattern.matches({"/midiclip/clear"})) return clearMidiClip(message);
     if (msgAddressPattern.matches({"/plugin/select"})) return selectPlugin(message);
     if (msgAddressPattern.matches({"/plugin/param/set"})) return setPluginParam(message);
+    if (msgAddressPattern.matches({"/plugin/save"})) return savePluginPreset(message);
+    if (msgAddressPattern.matches({"/plugin/load"})) return loadPluginPreset(message);
     if (msgAddressPattern.matches({"/audiotrack/select"})) return selectAudioTrack(message);
     if (msgAddressPattern.matches({"/save"})) return saveActiveEdit(message);
+    if (msgAddressPattern.toString().startsWith({"/transport"})) return handleTransportMessage(message);
 }
 
 void FluidOscServer::saveActiveEdit(const juce::OSCMessage &message) {
@@ -93,14 +96,97 @@ void FluidOscServer::setPluginParam(const OSCMessage& message) {
 
     String paramName = message[0].getString();
     float paramValue = message[1].getFloat32();
+
     for (te::AutomatableParameter* param : selectedPlugin->getAutomatableParameters()) {
         if (param->paramName.equalsIgnoreCase(paramName)) {
             param->beginParameterChangeGesture();
-            param->setNormalisedParameter(paramValue, NotificationType::dontSendNotification);
+            param->setNormalisedParameter(paramValue, NotificationType::sendNotification); 
             param->endParameterChangeGesture();
-            std::cout << "set " << paramName << " to " << paramValue << std::endl;
+            std::cout << "set " << paramName << " to " << paramValue << " explicitvalue: " << param->getCurrentExplicitValue() << " value: " << param->getCurrentValue() << std::endl;
             break;
         }
+    }
+}
+
+void FluidOscServer::savePluginPreset(const juce::OSCMessage& message) {
+    if (!selectedPlugin) return;
+    if (message.size() < 1 || !message[0].isString()) return;
+    saveTracktionPreset(selectedPlugin, message[0].getString());
+}
+
+void FluidOscServer::loadPluginPreset(const juce::OSCMessage& message) {
+    if (!selectedAudioTrack) {
+        std::cout << "Cannot load plugin preset: No audio track selected" << std::endl;
+        return;
+    }
+
+    if (message.size() < 1 || !message[0].isString()) {
+        std::cout << "Cannot load plugin preset: Message has no preset name" << std::endl;
+        return;
+    }
+
+    String filename = message[0].getString();
+    if (!filename.endsWithIgnoreCase(".trkpreset")) filename.append(".trkpreset", 10);
+    File file = File::getCurrentWorkingDirectory().getChildFile(filename);
+    ValueTree v = loadXmlFile(file);
+
+    if (!v.isValid()) {
+        std::cout << "Cannot load plugin preset: Failed to load and parse file" << std::endl;
+        return;
+    }
+
+    for (ValueTree preset : v) {
+        if (!preset.hasType(te::IDs::PLUGIN)) continue;
+        if (!preset.hasProperty(te::IDs::type)) continue;
+        String type = preset[te::IDs::type];
+        String name = preset[te::IDs::name];
+
+        // Tracktion plugins have a type property but no name property.
+        // getOrCreatePluginByName expect 'name' to be the name of the vst or
+        // 'type' of the tracktion plugin (which does not have a name).
+        // This sillyness allows us to get a plugin from a preset
+        if (!preset.hasProperty(te::IDs::name)) {
+            name = type;
+            type = String();
+        }
+
+        if (name.isEmpty()) {
+            std::cout << "Cannot load plugin preset: plugin has invalid type: " << type << std::endl;
+            continue;
+        }
+
+        std::cout << "Found preset: " << type << "/" << name << std::endl;
+
+        if (te::Plugin* plugin = getOrCreatePluginByName(*selectedAudioTrack, name, type)) {
+            ValueTree currentConfig = plugin->state;
+            // These should be correct on the preset, but just in case, get the ones
+            // returned by getOrCreatePluginByName, so we will be sure that we are not
+            // changing them.
+            if (currentConfig.hasProperty(te::IDs::type)) preset.setProperty(te::IDs::type, currentConfig[te::IDs::type], nullptr);
+            if (currentConfig.hasProperty(te::IDs::name)) preset.setProperty(te::IDs::name, currentConfig[te::IDs::name], nullptr);
+            if (currentConfig.hasProperty(te::IDs::uid)) preset.setProperty(te::IDs::uid, currentConfig[te::IDs::uid], nullptr);
+            if (currentConfig.hasProperty(te::IDs::filename)) preset.setProperty(te::IDs::filename, currentConfig[te::IDs::filename], nullptr);
+            if (currentConfig.hasProperty(te::IDs::id)) preset.setProperty(te::IDs::id, currentConfig[te::IDs::id], nullptr);
+            if (currentConfig.hasProperty(te::IDs::manufacturer)) preset.setProperty(te::IDs::manufacturer, currentConfig[te::IDs::manufacturer], nullptr);
+            if (currentConfig.hasProperty(te::IDs::programNum)) preset.setProperty(te::IDs::programNum, currentConfig[te::IDs::programNum], nullptr);
+
+            std::cout << "Current Config: " << currentConfig.toXmlString() << std::endl;
+            std::cout << "Preset  Config: " << preset.toXmlString() << std::endl;
+            std::cout << "Before loading: " << plugin->state.toXmlString() << std::endl;
+            // Now copy over everything else from the preset. This should inlude the
+            // all-important 'state' property of external plugins. External plugins also
+            // have some mundane properties like windowLocked="1", enabled="1"
+            plugin->restorePluginStateFromValueTree(preset);
+
+            std::cout << "After loading: " << plugin->state.toXmlString() << std::endl;
+
+            std::cout
+                << "Track: " << selectedAudioTrack->getName()
+                << " loaded preset: " << file.getFullPathName() << std::endl;
+        } else {
+            std::cout << "Cannot load plugin preset: failed to create plugin with type/name: " << type << "/" << name << std::endl;
+            continue;
+        };
     }
 }
 
@@ -116,7 +202,6 @@ void FluidOscServer::selectMidiClip(const juce::OSCMessage &message) {
         double startBeats = message[1].getFloat32();
         double startSeconds = activeCybrEdit->getEdit().tempoSequence.beatsToTime(startBeats);
         selectedMidiClip->setStart(startSeconds, false, true);
-
     }
     // Clip length
     if (message.size() >= 3 && message[2].isFloat32()) {
@@ -167,3 +252,53 @@ void FluidOscServer::insertMidiNote(const juce::OSCMessage &message) {
     te::MidiList& notes = selectedMidiClip->getSequence();
     notes.addNote(noteNumber, startBeat, lengthInBeats, velocity, colorIndex, nullptr);
 }
+
+void FluidOscServer::handleTransportMessage(const OSCMessage& message) {
+    if (!activeCybrEdit) return;
+    te::TransportControl& transport = activeCybrEdit->getEdit().getTransport();
+
+    const OSCAddressPattern pattern = message.getAddressPattern();
+    if (pattern.matches({"/transport/play"})) {
+        std::cout << "Play!" << std::endl;
+        transport.play(false);
+    } else if (pattern.matches({"/transport/stop"})) {
+        std::cout << "Stop!" << std::endl;
+        transport.stop(false, false);
+    } else if (pattern.matches({"/transport/to/seconds"})) {
+        if (message.size() < 1 || !message[0].isFloat32()) return;
+        transport.setCurrentPosition(message[0].getFloat32());
+    } else if (pattern.matches({"/transport/to"})) {
+        if (message.size() < 1 || !message[0].isFloat32()) return;
+        double beats = message[0].getFloat32();
+        double startSeconds = activeCybrEdit->getEdit().tempoSequence.beatsToTime(beats);
+        transport.setCurrentPosition(startSeconds);
+    } else if (pattern.matches({"/transport/loop"})) {
+        if (message.size() < 2 || !message[0].isFloat32() || !message[1].isFloat32()) {
+            std::cout << "/transport/loop failed - requires loop start and duration" << std::endl;
+            return;
+        }
+
+        double startBeats = message[0].getFloat32();
+        double startSeconds = activeCybrEdit->getEdit().tempoSequence.beatsToTime(startBeats);
+        double durationBeats = message[1].getFloat32();
+        double endBeats = startBeats + durationBeats;
+        double endSeconds = activeCybrEdit->getEdit().tempoSequence.beatsToTime(endBeats);
+
+        if (durationBeats == 0) {
+            // To disable looping specify duration of 0
+            std::cout << "Looping disabled!" << std::endl;
+            transport.looping.setValue(false, nullptr);
+            return;
+        }
+
+        std::cout << "Looping start|length: " << startBeats << ":" << endBeats << std::endl;
+        transport.setLoopIn(startSeconds);
+        transport.setLoopOut(endSeconds);
+        // If looping was previously disabled, setting looping to true seems to move the playhead
+        // to the start of the loop. This surprised me, but is okay for now. It is probably not the
+        // ideal behavior. Setting the loop point should probably never change playback (currently
+        // it probably only changes the playback iff we are not already looping, but if we are looping
+        // a different region, playback will be unaffected).
+        transport.looping.setValue(true, nullptr);
+    }
+};
