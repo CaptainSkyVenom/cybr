@@ -4,6 +4,7 @@ const cloud = require('./cloud');
 const fsHelpers = require('./fs-helpers');
 const library = require('./library-recipes');
 const mutators = require('./pattern-mutators');
+const structure = require('./apply-structure')
 
 module.exports = {
   cloud,
@@ -12,6 +13,7 @@ module.exports = {
   fromMars909,
   library,
   mutators,
+  structure,
   scores: {
     grandeNoTears: require('./scores/no-tears'),
     mars24kMagic: require('./scores/24k-magic'),
